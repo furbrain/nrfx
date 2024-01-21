@@ -76,6 +76,10 @@ typedef nrf_regulators_pof_thrvddh_t nrf_power_pof_thrvddh_t;
 #define NRF_POWER_POFTHRVDDH_V42     NRF_REGULATORS_POFTHRVDDH_V42
 
 #endif // NRF_REGULATORS_HAS_POFCON
+#else
+#define NRF_REGULATORS_HAS_POFCON 0
+#define NRF_REGULATORS_HAS_POFCON_VDDH 0
+#define NRF_REGULATORS_HAS_DCDCEN_VDDH 0
 #endif // REGULATORS_PRESENT
 
 #if defined(USBREG_PRESENT)
