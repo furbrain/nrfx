@@ -42,7 +42,6 @@
 
 #if defined(REGULATORS_PRESENT)
 #include <hal/nrf_regulators.h>
-#endif
 
 #if NRF_REGULATORS_HAS_POFCON
 
@@ -77,6 +76,7 @@ typedef nrf_regulators_pof_thrvddh_t nrf_power_pof_thrvddh_t;
 #define NRF_POWER_POFTHRVDDH_V42     NRF_REGULATORS_POFTHRVDDH_V42
 
 #endif // NRF_REGULATORS_HAS_POFCON
+#endif // REGULATORS_PRESENT
 
 #if defined(USBREG_PRESENT)
 #include "nrfx_usbreg.h"
