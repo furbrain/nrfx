@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 - 2020, Nordic Semiconductor ASA
+ * Copyright (c) 2015 - 2019, Nordic Semiconductor ASA
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -36,18 +36,24 @@
 #define NRFX_LOG_MODULE SAADC
 #include <nrfx_log.h>
 
+#define EVT_TO_STR(event)                                                       \
+    (event == NRF_SAADC_EVENT_STARTED       ? "NRF_SAADC_EVENT_STARTED"       : \
+    (event == NRF_SAADC_EVENT_END           ? "NRF_SAADC_EVENT_END"           : \
+    (event == NRF_SAADC_EVENT_DONE          ? "NRF_SAADC_EVENT_DONE"          : \
+    (event == NRF_SAADC_EVENT_RESULTDONE    ? "NRF_SAADC_EVENT_RESULTDONE"    : \
+    (event == NRF_SAADC_EVENT_CALIBRATEDONE ? "NRF_SAADC_EVENT_CALIBRATEDONE" : \
+    (event == NRF_SAADC_EVENT_STOPPED       ? "NRF_SAADC_EVENT_STOPPED"       : \
+                                              "UNKNOWN EVENT"))))))
+
 #if defined(NRF52_SERIES) && !defined(USE_WORKAROUND_FOR_ANOMALY_212)
     // ANOMALY 212 - SAADC events are missing when switching from single channel
     //               to multi channel configuration with burst enabled.
     #define USE_WORKAROUND_FOR_ANOMALY_212 1
 #endif
 
-#if defined(NRF53_SERIES) || defined(NRF91_SERIES)
+#if defined(NRF91_SERIES) || defined(NRF53_SERIES)
     // Make sure that SAADC is stopped before channel configuration.
     #define STOP_SAADC_ON_CHANNEL_CONFIG 1
-
-    // Make sure that SAADC calibration samples do not affect next conversions.
-    #define INTERCEPT_SAADC_CALIBRATION_SAMPLES 1
 #endif
 
 /** @brief SAADC driver states.*/
@@ -69,12 +75,9 @@ typedef struct
     nrfx_saadc_event_handler_t event_handler;                ///< Event handler function pointer.
     nrf_saadc_value_t *        p_buffer_primary;             ///< Pointer to the primary result buffer.
     nrf_saadc_value_t *        p_buffer_secondary;           ///< Pointer to the secondary result buffer.
-#if NRFX_CHECK(INTERCEPT_SAADC_CALIBRATION_SAMPLES)
-    nrf_saadc_value_t          calib_samples[6];             ///< Scratch buffer for calibration samples.
-#endif
     uint16_t                   size_primary;                 ///< Size of the primary result buffer.
     uint16_t                   size_secondary;               ///< Size of the secondary result buffer.
-    uint16_t                   samples_converted;            ///< Number of samples present in result buffer when in the blocking mode.
+    uint16_t                   samples_per_trigger;          ///< Samples to take per one trigger in the blocking mode.
     nrf_saadc_input_t          channels_pselp[SAADC_CH_NUM]; ///< Array holding each channel positive input.
     nrf_saadc_input_t          channels_pseln[SAADC_CH_NUM]; ///< Array holding each channel negative input.
     nrf_saadc_state_t          saadc_state;                  ///< State of the SAADC driver.
@@ -84,7 +87,6 @@ typedef struct
     uint8_t                    limits_low_activated;         ///< Bitmask of the activated low limits.
     uint8_t                    limits_high_activated;        ///< Bitmask of the activated high limits.
     bool                       start_on_end;                 ///< Flag indicating if the START task is to be triggered on the END event.
-    bool                       oversampling_without_burst;   ///< Flag indicating whether oversampling without burst is configured.
 } nrfx_saadc_cb_t;
 
 static nrfx_saadc_cb_t m_cb;
@@ -119,6 +121,17 @@ static void saadc_anomaly_212_workaround_apply(void)
     nrf_saadc_resolution_set(NRF_SAADC, resolution);
 }
 #endif // NRFX_CHECK(USE_WORKAROUND_FOR_ANOMALY_212)
+
+static void saadc_enabled_channels_sample(void)
+{
+    for (uint32_t sample_idx = 0; sample_idx < m_cb.samples_per_trigger; sample_idx++)
+    {
+        nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_SAMPLE);
+        while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_DONE))
+        {}
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_DONE);
+    }
+}
 
 static nrfx_err_t saadc_channel_count_get(uint32_t  ch_to_activate_mask,
                                           uint8_t * p_active_ch_count)
@@ -170,9 +183,11 @@ static void saadc_generic_mode_set(uint32_t                   ch_to_activate_mas
 
 #if NRFX_CHECK(STOP_SAADC_ON_CHANNEL_CONFIG)
     nrf_saadc_int_disable(NRF_SAADC, NRF_SAADC_INT_STOPPED);
+    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
     nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_STOP);
     while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_STOPPED))
-    {}
+    {
+    }
     nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
 #endif
 
@@ -183,20 +198,25 @@ static void saadc_generic_mode_set(uint32_t                   ch_to_activate_mas
     m_cb.p_buffer_secondary = NULL;
     m_cb.event_handler = event_handler;
     m_cb.channels_activated = ch_to_activate_mask;
-    m_cb.samples_converted = 0;
 
     nrf_saadc_resolution_set(NRF_SAADC, resolution);
     nrf_saadc_oversample_set(NRF_SAADC, oversampling);
     if (event_handler)
     {
-        nrf_saadc_int_set(NRF_SAADC,
-                          NRF_SAADC_INT_STARTED |
-                          NRF_SAADC_INT_STOPPED |
-                          NRF_SAADC_INT_END);
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STARTED);
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
+        nrf_saadc_int_enable(NRF_SAADC,
+                             NRF_SAADC_INT_STARTED |
+                             NRF_SAADC_INT_STOPPED |
+                             NRF_SAADC_INT_END);
     }
     else
     {
-        nrf_saadc_int_set(NRF_SAADC, 0);
+        nrf_saadc_int_disable(NRF_SAADC,
+                              NRF_SAADC_INT_STARTED |
+                              NRF_SAADC_INT_STOPPED |
+                              NRF_SAADC_INT_END);
     }
 
     for (uint32_t ch_pos = 0; ch_pos < SAADC_CH_NUM; ch_pos++)
@@ -223,28 +243,22 @@ static void saadc_generic_mode_set(uint32_t                   ch_to_activate_mas
 
 nrfx_err_t nrfx_saadc_init(uint8_t interrupt_priority)
 {
-    nrfx_err_t err_code;
     if (m_cb.saadc_state != NRF_SAADC_STATE_UNINITIALIZED)
     {
-        err_code = NRFX_ERROR_INVALID_STATE;
         NRFX_LOG_WARNING("Function: %s, error code: %s.",
                          __func__,
                          NRFX_LOG_ERROR_STRING_GET(err_code));
-        return err_code;
+        return NRFX_ERROR_INVALID_STATE;
     }
     m_cb.saadc_state = NRF_SAADC_STATE_IDLE;
 
-    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STARTED);
-    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
-    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
-    nrf_saadc_int_set(NRF_SAADC, 0);
+    nrf_saadc_int_disable(NRF_SAADC, NRF_SAADC_INT_ALL);
     NRFX_IRQ_ENABLE(SAADC_IRQn);
     NRFX_IRQ_PRIORITY_SET(SAADC_IRQn, interrupt_priority);
 
-    err_code = NRFX_SUCCESS;
     NRFX_LOG_INFO("Function: %s, error code: %s.", __func__, NRFX_LOG_ERROR_STRING_GET(err_code));
 
-    return err_code;
+    return NRFX_SUCCESS;
 }
 
 void nrfx_saadc_uninit(void)
@@ -326,7 +340,6 @@ nrfx_err_t nrfx_saadc_simple_mode_set(uint32_t                   channel_mask,
     }
     else
     {
-        // Burst is implicitly enabled if oversampling is enabled.
         burst = NRF_SAADC_BURST_ENABLED;
     }
 
@@ -336,6 +349,17 @@ nrfx_err_t nrfx_saadc_simple_mode_set(uint32_t                   channel_mask,
                            burst,
                            event_handler);
 
+    if (event_handler)
+    {
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_RESULTDONE);
+        nrf_saadc_int_enable(NRF_SAADC, NRF_SAADC_INT_RESULTDONE);
+    }
+    else
+    {
+        nrf_saadc_int_disable(NRF_SAADC, NRF_SAADC_INT_RESULTDONE);
+    }
+
+    m_cb.samples_per_trigger = active_ch_count;
     m_cb.channels_activated_count = active_ch_count;
     m_cb.saadc_state = NRF_SAADC_STATE_SIMPLE_MODE;
 
@@ -367,19 +391,23 @@ nrfx_err_t nrfx_saadc_advanced_mode_set(uint32_t                        channel_
         return NRFX_ERROR_NOT_SUPPORTED;
     }
 
-    bool oversampling_without_burst = false;
     if ((p_config->oversampling != NRF_SAADC_OVERSAMPLE_DISABLED) &&
         (p_config->burst == NRF_SAADC_BURST_DISABLED))
     {
+        // Oversampling without burst
         if (active_ch_count > 1)
         {
-            // Oversampling without burst is possible only on single channel.
             return NRFX_ERROR_NOT_SUPPORTED;
         }
         else
         {
-            oversampling_without_burst = true;
+            m_cb.samples_per_trigger =
+                nrf_saadc_oversample_sample_count_get(p_config->oversampling);
         }
+    }
+    else
+    {
+        m_cb.samples_per_trigger = active_ch_count;
     }
 
     saadc_generic_mode_set(channel_mask,
@@ -399,7 +427,6 @@ nrfx_err_t nrfx_saadc_advanced_mode_set(uint32_t                        channel_
 
     m_cb.channels_activated_count = active_ch_count;
     m_cb.start_on_end = p_config->start_on_end;
-    m_cb.oversampling_without_burst = oversampling_without_burst;
 
     m_cb.saadc_state = NRF_SAADC_STATE_ADV_MODE;
 
@@ -434,8 +461,9 @@ nrfx_err_t nrfx_saadc_buffer_set(nrf_saadc_value_t * p_buffer, uint16_t size)
             {
                 return NRFX_ERROR_INVALID_LENGTH;
             }
-            m_cb.size_primary     = size;
             m_cb.p_buffer_primary = p_buffer;
+            m_cb.size_primary     = size;
+            nrf_saadc_buffer_init(NRF_SAADC, p_buffer, size);
             break;
 
         case NRF_SAADC_STATE_ADV_MODE_SAMPLE_STARTED:
@@ -448,13 +476,14 @@ nrfx_err_t nrfx_saadc_buffer_set(nrf_saadc_value_t * p_buffer, uint16_t size)
         case NRF_SAADC_STATE_ADV_MODE_SAMPLE:
             if (m_cb.p_buffer_primary)
             {
-                m_cb.size_secondary     = size;
                 m_cb.p_buffer_secondary = p_buffer;
+                m_cb.size_secondary     = size;
             }
             else
             {
-                m_cb.size_primary     = size;
                 m_cb.p_buffer_primary = p_buffer;
+                m_cb.size_primary     = size;
+                nrf_saadc_buffer_init(NRF_SAADC, p_buffer, size);
             }
             break;
 
@@ -476,14 +505,9 @@ nrfx_err_t nrfx_saadc_mode_trigger(void)
     }
 
     nrfx_err_t result = NRFX_SUCCESS;
-    switch (m_cb.saadc_state)
-    {
+    switch (m_cb.saadc_state) {
         case NRF_SAADC_STATE_SIMPLE_MODE:
             nrf_saadc_enable(NRF_SAADC);
-            // When in simple blocking or non-blocking mode, buffer size is equal to activated channel count.
-            // Single SAMPLE task is enough to obtain one sample on each activated channel.
-            // This will result in buffer being filled with samples and therefore END event will appear.
-            nrf_saadc_buffer_init(NRF_SAADC, m_cb.p_buffer_primary, m_cb.size_primary);
             if (m_cb.event_handler)
             {
                 m_cb.saadc_state = NRF_SAADC_STATE_SIMPLE_MODE_SAMPLE;
@@ -496,7 +520,7 @@ nrfx_err_t nrfx_saadc_mode_trigger(void)
                 {}
                 nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STARTED);
 
-                nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_SAMPLE);
+                saadc_enabled_channels_sample();
                 while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_END))
                 {}
                 nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
@@ -508,64 +532,49 @@ nrfx_err_t nrfx_saadc_mode_trigger(void)
             nrf_saadc_enable(NRF_SAADC);
             if (m_cb.event_handler)
             {
-                // When in advanced non-blocking mode, latch whole buffer in EasyDMA.
-                // END event will arrive when whole buffer is filled with samples.
                 m_cb.saadc_state = NRF_SAADC_STATE_ADV_MODE_SAMPLE;
-                nrf_saadc_buffer_init(NRF_SAADC, m_cb.p_buffer_primary, m_cb.size_primary);
                 nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_START);
                 break;
             }
 
-            // When in advanced blocking mode, latch single chunk of buffer in EasyDMA.
-            // Each chunk consists of single sample from each activated channels.
-            // END event will arrive when single chunk is filled with samples.
-            nrf_saadc_buffer_init(NRF_SAADC,
-                                  &m_cb.p_buffer_primary[m_cb.samples_converted],
-                                  m_cb.channels_activated_count);
-
+            m_cb.saadc_state = NRF_SAADC_STATE_ADV_MODE_SAMPLE_STARTED;
             nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_START);
             while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_STARTED))
             {}
             nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STARTED);
+            /* fall-through */
 
-            if (m_cb.oversampling_without_burst)
+        case NRF_SAADC_STATE_ADV_MODE_SAMPLE_STARTED:
+            if (m_cb.event_handler)
             {
-                // Oversampling without burst is possible only on single channel.
-                // In this configuration more than one SAMPLE task is needed to obtain single sample.
-                uint32_t samples_to_take =
-                    nrf_saadc_oversample_sample_count_get(nrf_saadc_oversample_get(NRF_SAADC));
+                result = NRFX_ERROR_INVALID_STATE;
+                break;
+            }
 
-                for (uint32_t sample_idx = 0; sample_idx < samples_to_take; sample_idx++)
+            saadc_enabled_channels_sample();
+            if (nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_END))
+            {
+                nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
+                m_cb.saadc_state = NRF_SAADC_STATE_ADV_MODE;
+                m_cb.p_buffer_primary = m_cb.p_buffer_secondary;
+                m_cb.size_primary     = m_cb.size_secondary;
+                m_cb.p_buffer_secondary = NULL;
+                if (m_cb.p_buffer_primary)
                 {
-                    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_DONE);
-                    nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_SAMPLE);
-                    while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_DONE))
-                    {}
+                    nrf_saadc_buffer_init(NRF_SAADC,
+                                          m_cb.p_buffer_primary,
+                                          m_cb.size_primary);
                 }
+                else
+                {
+                    nrf_saadc_disable(NRF_SAADC);
+                }
+                result = NRFX_SUCCESS;
             }
             else
-            {
-                // Single SAMPLE task is enough to obtain one sample on each activated channel.
-                // This will result in chunk being filled with samples and therefore END event will appear.
-                nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_SAMPLE);
-            }
-            while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_END))
-            {}
-            nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
-
-            m_cb.samples_converted += m_cb.channels_activated_count;
-            if (m_cb.samples_converted < m_cb.size_primary)
             {
                 result = NRFX_ERROR_BUSY;
             }
-            else
-            {
-                m_cb.samples_converted  = 0;
-                m_cb.p_buffer_primary   = m_cb.p_buffer_secondary;
-                m_cb.size_primary       = m_cb.size_secondary;
-                m_cb.p_buffer_secondary = NULL;
-            }
-            nrf_saadc_disable(NRF_SAADC);
             break;
 
         default:
@@ -580,19 +589,43 @@ void nrfx_saadc_abort(void)
 {
     NRFX_ASSERT(m_cb.saadc_state != NRF_SAADC_STATE_UNINITIALIZED);
 
-    if (!m_cb.event_handler)
+    if (!saadc_busy_check())
     {
+        return;
+    }
+
+    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
+    nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_STOP);
+
+    if (m_cb.saadc_state == NRF_SAADC_STATE_CALIBRATION)
+    {
+        // STOPPED event does not appear when the calibration is ongoing
+        m_cb.saadc_state = NRF_SAADC_STATE_IDLE;
+    }
+    else if (!m_cb.event_handler)
+    {
+        while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_STOPPED))
+        {}
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
+
         m_cb.p_buffer_primary = NULL;
         m_cb.p_buffer_secondary = NULL;
-        m_cb.samples_converted = 0;
-    }
-    else
-    {
-        nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_STOP);
-        if (m_cb.saadc_state == NRF_SAADC_STATE_CALIBRATION)
+        switch (m_cb.saadc_state)
         {
-            // STOPPED event does not appear when the calibration is ongoing
-            m_cb.saadc_state = NRF_SAADC_STATE_IDLE;
+            case NRF_SAADC_STATE_SIMPLE_MODE_SAMPLE:
+                m_cb.saadc_state = NRF_SAADC_STATE_SIMPLE_MODE;
+                break;
+
+            case NRF_SAADC_STATE_ADV_MODE_SAMPLE:
+                /* fall-through */
+
+            case NRF_SAADC_STATE_ADV_MODE_SAMPLE_STARTED:
+                m_cb.saadc_state = NRF_SAADC_STATE_ADV_MODE;
+                break;
+
+            default:
+                break;
         }
     }
 }
@@ -659,31 +692,8 @@ nrfx_err_t nrfx_saadc_offset_calibrate(nrfx_saadc_event_handler_t event_handler)
     m_cb.saadc_state = NRF_SAADC_STATE_CALIBRATION;
     m_cb.event_handler = event_handler;
 
+    nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_CALIBRATEDONE);
     nrf_saadc_enable(NRF_SAADC);
-#if NRFX_CHECK(INTERCEPT_SAADC_CALIBRATION_SAMPLES)
-    nrf_saadc_buffer_init(NRF_SAADC, m_cb.calib_samples, NRFX_ARRAY_SIZE(m_cb.calib_samples));
-    if (event_handler)
-    {
-        nrf_saadc_int_set(NRF_SAADC, NRF_SAADC_INT_STARTED | NRF_SAADC_INT_CALIBRATEDONE);
-        nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_START);
-    }
-    else
-    {
-        nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_START);
-        while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_STARTED))
-        {}
-        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STARTED);
-
-        nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_CALIBRATEOFFSET);
-        while (!nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_CALIBRATEDONE))
-        {}
-        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_CALIBRATEDONE);
-        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
-
-        nrf_saadc_disable(NRF_SAADC);
-        m_cb.saadc_state = NRF_SAADC_STATE_IDLE;
-    }
-#else
     nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_CALIBRATEOFFSET);
     if (event_handler)
     {
@@ -697,7 +707,6 @@ nrfx_err_t nrfx_saadc_offset_calibrate(nrfx_saadc_event_handler_t event_handler)
         nrf_saadc_disable(NRF_SAADC);
         m_cb.saadc_state = NRF_SAADC_STATE_IDLE;
     }
-#endif // NRFX_CHECK(INTERCEPT_SAADC_CALIBRATION_SAMPLES)
 
     return NRFX_SUCCESS;
 }
@@ -728,24 +737,13 @@ static void saadc_event_started_handle(void)
             /* fall-through */
 
         case NRF_SAADC_STATE_ADV_MODE_SAMPLE_STARTED:
-            if (!m_cb.p_buffer_secondary)
-            {
-                // Send next buffer request only if it was not provided earlier,
-                // before conversion start or outside of user's callback context.
-                evt_data.type = NRFX_SAADC_EVT_BUF_REQ;
-                m_cb.event_handler(&evt_data);
-            }
+            evt_data.type = NRFX_SAADC_EVT_BUF_REQ;
+            m_cb.event_handler(&evt_data);
             break;
 
         case NRF_SAADC_STATE_SIMPLE_MODE_SAMPLE:
             nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_SAMPLE);
             break;
-
-#if NRFX_CHECK(INTERCEPT_SAADC_CALIBRATION_SAMPLES)
-        case NRF_SAADC_STATE_CALIBRATION:
-            nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_CALIBRATEOFFSET);
-            break;
-#endif
 
         default:
             break;
@@ -821,6 +819,16 @@ void nrfx_saadc_irq_handler(void)
         saadc_event_started_handle();
     }
 
+    if (nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_RESULTDONE))
+    {
+        nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_RESULTDONE);
+
+        if (m_cb.saadc_state == NRF_SAADC_STATE_SIMPLE_MODE_SAMPLE)
+        {
+            nrf_saadc_task_trigger(NRF_SAADC, NRF_SAADC_TASK_SAMPLE);
+        }
+    }
+
     if (nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_STOPPED))
     {
         nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_STOPPED);
@@ -834,15 +842,7 @@ void nrfx_saadc_irq_handler(void)
     if (nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_END))
     {
         nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_END);
-
-#if NRFX_CHECK(INTERCEPT_SAADC_CALIBRATION_SAMPLES)
-        // When samples are intercepted into scratch buffer during calibration,
-        // END event appears when the calibration finishes. This event should be ignored.
-        if (m_cb.saadc_state != NRF_SAADC_STATE_CALIBRATION)
-#endif
-        {
-            saadc_event_end_handle();
-        }
+        saadc_event_end_handle();
     }
 
     saadc_event_limits_handle(m_cb.limits_low_activated,  NRF_SAADC_LIMIT_LOW);
@@ -851,7 +851,6 @@ void nrfx_saadc_irq_handler(void)
     if (nrf_saadc_event_check(NRF_SAADC, NRF_SAADC_EVENT_CALIBRATEDONE))
     {
         nrf_saadc_event_clear(NRF_SAADC, NRF_SAADC_EVENT_CALIBRATEDONE);
-        nrf_saadc_disable(NRF_SAADC);
 
         m_cb.saadc_state = NRF_SAADC_STATE_IDLE;
 
@@ -859,6 +858,8 @@ void nrfx_saadc_irq_handler(void)
         evt_data.type = NRFX_SAADC_EVT_CALIBRATEDONE;
         m_cb.event_handler(&evt_data);
 
+        nrf_saadc_int_disable(NRF_SAADC, NRF_SAADC_INT_CALIBRATEDONE);
+        nrf_saadc_disable(NRF_SAADC);
     }
 }
 #endif // NRFX_CHECK(NRFX_SAADC_ENABLED)

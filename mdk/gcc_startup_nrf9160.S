@@ -68,7 +68,7 @@ __HeapBase:
 __HeapLimit:
     .size __HeapLimit, . - __HeapLimit
 
-    .section .isr_vector, "ax"
+    .section .isr_vector
     .align 2
     .globl __isr_vector
 __isr_vector:

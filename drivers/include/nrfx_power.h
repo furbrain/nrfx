@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 - 2020, Nordic Semiconductor ASA
+ * Copyright (c) 2017 - 2019, Nordic Semiconductor ASA
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,7 +35,6 @@
 #include <nrfx.h>
 #include <hal/nrf_power.h>
 #include <nrfx_power_clock.h>
-#include "nrfx_power_compat.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,29 +46,6 @@ extern "C" {
  * @ingroup nrf_power
  * @brief   POWER peripheral driver.
  */
-
-#if NRF_POWER_HAS_POFCON || NRFX_CHECK(NRF_REGULATORS_HAS_POFCON) || defined(__NRFX_DOXYGEN__)
-/** @brief Symbol indicating whether the power failure comparator is supported. */
-#define NRFX_POWER_SUPPORTS_POFCON 1
-#else
-#define NRFX_POWER_SUPPORTS_POFCON 0
-#endif
-
-#if NRF_POWER_HAS_POFCON_VDDH || NRFX_CHECK(NRF_REGULATORS_HAS_POFCON_VDDH) || \
-    defined(__NRFX_DOXYGEN__)
-/** @brief Symbol indicating whether the power failure comparator for VDDH is supported. */
-#define NRFX_POWER_SUPPORTS_POFCON_VDDH 1
-#else
-#define NRFX_POWER_SUPPORTS_POFCON_VDDH 0
-#endif
-
-#if NRF_POWER_HAS_DCDCEN_VDDH || NRFX_CHECK(NRF_REGULATORS_HAS_DCDCEN_VDDH) || \
-    defined(__NRFX_DOXYGEN__)
-/** @brief Symbol indicating whether the VDDH regulator is supported. */
-#define NRFX_POWER_SUPPORTS_DCDCEN_VDDH 1
-#else
-#define NRFX_POWER_SUPPORTS_DCDCEN_VDDH 0
-#endif
 
 /**
  * @brief Power mode possible configurations
@@ -120,7 +96,7 @@ typedef enum
     NRFX_POWER_USB_STATE_CONNECTED,    /**< The USB power is detected, but USB power regulator is not ready. */
     NRFX_POWER_USB_STATE_READY         /**< From the power viewpoint, USB is ready for working. */
 }nrfx_power_usb_state_t;
-#endif // NRF_POWER_HAS_USBREG || defined(__NRFX_DOXYGEN__)
+#endif /* NRF_POWER_HAS_USBREG */
 
 /**
  * @name Callback types
@@ -169,7 +145,7 @@ typedef struct
      */
     bool dcdcen:1;
 
-#if NRFX_POWER_SUPPORTS_DCDCEN_VDDH
+#if NRF_POWER_HAS_VDDH || defined(__NRFX_DOXYGEN__)
     /**
      * @brief Enable HV DCDC regulator.
      *
@@ -190,10 +166,10 @@ typedef struct
 typedef struct
 {
     nrfx_power_pofwarn_event_handler_t handler; //!< Event handler.
-#if NRFX_POWER_SUPPORTS_POFCON
+#if NRF_POWER_HAS_POFCON || defined(__NRFX_DOXYGEN__)
     nrf_power_pof_thr_t                thr;     //!< Threshold for power failure detection
 #endif
-#if NRFX_POWER_SUPPORTS_POFCON_VDDH
+#if NRF_POWER_HAS_VDDH || defined(__NRFX_DOXYGEN__)
     nrf_power_pof_thrvddh_t            thrvddh; //!< Threshold for power failure detection on the VDDH pin.
 #endif
 }nrfx_power_pofwarn_config_t;
@@ -222,7 +198,7 @@ typedef struct
 {
     nrfx_power_usb_event_handler_t handler; //!< Event processing.
 }nrfx_power_usbevt_config_t;
-#endif // NRF_POWER_HAS_USBREG || defined(__NRFX_DOXYGEN__)
+#endif /* NRF_POWER_HAS_USBREG */
 
 /**
  * @brief Function for getting the handler of the power failure comparator.
@@ -236,7 +212,7 @@ nrfx_power_pofwarn_event_handler_t nrfx_power_pof_handler_get(void);
  * @return Handler of the USB power.
  */
 nrfx_power_usb_event_handler_t nrfx_power_usb_handler_get(void);
-#endif // NRF_POWER_HAS_USBREG || defined(__NRFX_DOXYGEN__)
+#endif
 
 /**
  * @brief Function for initializing the power module driver.
@@ -259,7 +235,7 @@ nrfx_err_t nrfx_power_init(nrfx_power_config_t const * p_config);
  */
 void nrfx_power_uninit(void);
 
-#if NRFX_POWER_SUPPORTS_POFCON
+#if NRF_POWER_HAS_POFCON || defined(__NRFX_DOXYGEN__)
 /**
  * @brief Function for initializing the power failure comparator.
  *
@@ -295,7 +271,7 @@ void nrfx_power_pof_disable(void);
  * Clears the settings of the power failure comparator.
  */
 void nrfx_power_pof_uninit(void);
-#endif // NRFX_POWER_SUPPORTS_POFCON
+#endif // NRF_POWER_HAS_POFCON || defined(__NRFX_DOXYGEN__)
 
 #if NRF_POWER_HAS_SLEEPEVT || defined(__NRFX_DOXYGEN__)
 /**
@@ -360,7 +336,7 @@ void nrfx_power_usbevt_uninit(void);
  */
 NRFX_STATIC_INLINE nrfx_power_usb_state_t nrfx_power_usbstatus_get(void);
 
-#endif // NRF_POWER_HAS_USBREG || defined(__NRFX_DOXYGEN__)
+#endif /* NRF_POWER_HAS_USBREG */
 
 #ifndef NRFX_DECLARE_ONLY
 #if NRF_POWER_HAS_USBREG
@@ -377,8 +353,8 @@ NRFX_STATIC_INLINE nrfx_power_usb_state_t nrfx_power_usbstatus_get(void)
     }
     return NRFX_POWER_USB_STATE_READY;
 }
-#endif // NRF_POWER_HAS_USBREG
-#endif // NRFX_DECLARE_ONLY
+#endif /* NRF_POWER_HAS_USBREG */
+#endif /* NRFX_DECLARE_ONLY */
 
 /** @} */
 

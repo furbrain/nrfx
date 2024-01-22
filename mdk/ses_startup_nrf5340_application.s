@@ -138,14 +138,8 @@ Dummy_Handler:
 .weak SPIM1_SPIS1_TWIM1_TWIS1_UARTE1_IRQHandler
 .thumb_set SPIM1_SPIS1_TWIM1_TWIS1_UARTE1_IRQHandler, Dummy_Handler
 
-.weak SPIM4_IRQHandler
-.thumb_set SPIM4_IRQHandler, Dummy_Handler
-
-.weak SPIM2_SPIS2_TWIM2_TWIS2_UARTE2_IRQHandler
-.thumb_set SPIM2_SPIS2_TWIM2_TWIS2_UARTE2_IRQHandler, Dummy_Handler
-
-.weak SPIM3_SPIS3_TWIM3_TWIS3_UARTE3_IRQHandler
-.thumb_set SPIM3_SPIS3_TWIM3_TWIS3_UARTE3_IRQHandler, Dummy_Handler
+.weak SPIM2_IRQHandler
+.thumb_set SPIM2_IRQHandler, Dummy_Handler
 
 .weak GPIOTE0_IRQHandler
 .thumb_set GPIOTE0_IRQHandler, Dummy_Handler
@@ -204,9 +198,6 @@ Dummy_Handler:
 .weak PWM2_IRQHandler
 .thumb_set PWM2_IRQHandler, Dummy_Handler
 
-.weak PWM3_IRQHandler
-.thumb_set PWM3_IRQHandler, Dummy_Handler
-
 .weak PDM0_IRQHandler
 .thumb_set PDM0_IRQHandler, Dummy_Handler
 
@@ -225,11 +216,8 @@ Dummy_Handler:
 .weak GPIOTE1_IRQHandler
 .thumb_set GPIOTE1_IRQHandler, Dummy_Handler
 
-.weak QDEC0_IRQHandler
-.thumb_set QDEC0_IRQHandler, Dummy_Handler
-
-.weak QDEC1_IRQHandler
-.thumb_set QDEC1_IRQHandler, Dummy_Handler
+.weak QDEC_IRQHandler
+.thumb_set QDEC_IRQHandler, Dummy_Handler
 
 .weak USBD_IRQHandler
 .thumb_set USBD_IRQHandler, Dummy_Handler
@@ -294,9 +282,9 @@ _vectors:
   .word   0                           /*Reserved */
   .word   SPIM0_SPIS0_TWIM0_TWIS0_UARTE0_IRQHandler
   .word   SPIM1_SPIS1_TWIM1_TWIS1_UARTE1_IRQHandler
-  .word   SPIM4_IRQHandler
-  .word   SPIM2_SPIS2_TWIM2_TWIS2_UARTE2_IRQHandler
-  .word   SPIM3_SPIS3_TWIM3_TWIS3_UARTE3_IRQHandler
+  .word   SPIM2_IRQHandler
+  .word   0                           /*Reserved */
+  .word   0                           /*Reserved */
   .word   GPIOTE0_IRQHandler
   .word   SAADC_IRQHandler
   .word   TIMER0_IRQHandler
@@ -320,7 +308,7 @@ _vectors:
   .word   PWM0_IRQHandler
   .word   PWM1_IRQHandler
   .word   PWM2_IRQHandler
-  .word   PWM3_IRQHandler
+  .word   0                           /*Reserved */
   .word   0                           /*Reserved */
   .word   PDM0_IRQHandler
   .word   0                           /*Reserved */
@@ -335,8 +323,8 @@ _vectors:
   .word   0                           /*Reserved */
   .word   0                           /*Reserved */
   .word   0                           /*Reserved */
-  .word   QDEC0_IRQHandler
-  .word   QDEC1_IRQHandler
+  .word   QDEC_IRQHandler
+  .word   0                           /*Reserved */
   .word   0                           /*Reserved */
   .word   USBD_IRQHandler
   .word   USBREGULATOR_IRQHandler
