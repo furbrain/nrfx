@@ -262,6 +262,7 @@ void nrfx_uarte_uninit(nrfx_uarte_t const * p_instance)
     {
         return;
     }
+    NRF_UARTE_Type * p_reg = p_instance->p_reg;
 
     if (p_cb->handler)
     {
@@ -269,18 +270,28 @@ void nrfx_uarte_uninit(nrfx_uarte_t const * p_instance)
     }
     // Make sure all transfers are finished before UARTE is disabled
     // to achieve the lowest power consumption.
-    nrf_uarte_shorts_disable(p_instance->p_reg, NRF_UARTE_SHORT_ENDRX_STARTRX);
-    nrf_uarte_task_trigger(p_instance->p_reg, NRF_UARTE_TASK_STOPRX);
-    nrf_uarte_event_clear(p_instance->p_reg, NRF_UARTE_EVENT_TXSTOPPED);
-    nrf_uarte_task_trigger(p_instance->p_reg, NRF_UARTE_TASK_STOPTX);
-    while (!nrf_uarte_event_check(p_instance->p_reg, NRF_UARTE_EVENT_TXSTOPPED))
+    nrf_uarte_shorts_disable(p_reg, NRF_UARTE_SHORT_ENDRX_STARTRX);
+
+    // Check if there is any ongoing reception.
+    if (p_cb->rx_buffer_length)
+    {
+        nrf_uarte_event_clear(p_reg, NRF_UARTE_EVENT_RXTO);
+        nrf_uarte_task_trigger(p_reg, NRF_UARTE_TASK_STOPRX);
+    }
+
+    nrf_uarte_event_clear(p_reg, NRF_UARTE_EVENT_TXSTOPPED);
+    nrf_uarte_task_trigger(p_reg, NRF_UARTE_TASK_STOPTX);
+
+    // Wait for TXSTOPPED event and for RXTO event, provided that there was ongoing reception.
+    while (!nrf_uarte_event_check(p_reg, NRF_UARTE_EVENT_TXSTOPPED) ||
+           (p_cb->rx_buffer_length && !nrf_uarte_event_check(p_reg, NRF_UARTE_EVENT_RXTO)))
     {}
 
-    nrf_uarte_disable(p_instance->p_reg);
+    nrf_uarte_disable(p_reg);
     pins_to_default(p_instance);
 
 #if NRFX_CHECK(NRFX_PRS_ENABLED)
-    nrfx_prs_release(p_instance->p_reg);
+    nrfx_prs_release(p_reg);
 #endif
 
     p_cb->state   = NRFX_DRV_STATE_UNINITIALIZED;
